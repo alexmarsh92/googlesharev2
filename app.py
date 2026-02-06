@@ -226,8 +226,8 @@ def get_amazon_keyword_volumes(login, password, brand, location_code, months_bac
     """Get keyword search volumes from Amazon via DataforSEO API"""
     
     try:
-        # API endpoint
-        url = "https://api.dataforseo.com/v3/keywords_data/amazon/search_volume/live"
+        # CORRECT API endpoint for Amazon search volume
+        url = "https://api.dataforseo.com/v3/dataforseo_labs/amazon/bulk_search_volume/live"
         
         # Authentication
         credentials = f"{login}:{password}"
@@ -238,18 +238,30 @@ def get_amazon_keyword_volumes(login, password, brand, location_code, months_bac
             "Content-Type": "application/json"
         }
         
-        # Request payload
+        # Map location codes to names for DataforSEO
+        location_names = {
+            "2840": "United States",
+            "2826": "United Kingdom", 
+            "2276": "Germany",
+            "2250": "France",
+            "2380": "Italy",
+            "2724": "Spain"
+        }
+        
+        location_name = location_names.get(str(location_code), "United States")
+        
+        # Request payload - matching DataforSEO's official example structure
         payload = [{
-            "location_code": int(location_code),
             "keywords": [brand.lower()],
-            "search_partners": False
+            "location_name": location_name,
+            "language_name": "English"
         }]
         
         # Make request
         response = requests.post(url, json=payload, headers=headers)
         
         if response.status_code != 200:
-            st.error(f"DataforSEO API Error for {brand}: Status {response.status_code}")
+            st.error(f"DataforSEO API Error for {brand}: Status {response.status_code} - {response.text[:200]}")
             return {
                 'brand': brand,
                 'avg_volume': 0,
@@ -259,35 +271,61 @@ def get_amazon_keyword_volumes(login, password, brand, location_code, months_bac
         
         data = response.json()
         
-        # Process results
-        if data.get('tasks') and data['tasks'][0].get('result'):
-            result = data['tasks'][0]['result'][0]
-            
-            search_volume = result.get('search_volume', 0)
-            
-            # DataforSEO doesn't provide monthly breakdown by default
-            # We'll use the average for all months
-            monthly_volumes = {}
-            end_date = datetime.now().replace(day=1) - relativedelta(months=2)
-            
-            for i in range(months_back):
-                month_date = end_date - relativedelta(months=i)
-                month_key = f"{month_date.year}-{month_date.month:02d}"
-                monthly_volumes[month_key] = search_volume
-            
-            return {
-                'brand': brand,
-                'avg_volume': search_volume,
-                'monthly_volumes': monthly_volumes,
-                'keywords': [brand]  # DataforSEO returns aggregate, not individual keywords
-            }
-        else:
+        # Check API status
+        if data.get('status_code') != 20000:
+            st.error(f"DataforSEO Error for {brand}: {data.get('status_message', 'Unknown error')}")
             return {
                 'brand': brand,
                 'avg_volume': 0,
                 'monthly_volumes': {},
                 'keywords': []
             }
+        
+        # Process results
+        search_volume = 0
+        
+        if data.get('tasks') and len(data['tasks']) > 0:
+            task = data['tasks'][0]
+            
+            if task.get('result') and len(task['result']) > 0:
+                result = task['result'][0]
+                items = result.get('items', [])
+                
+                # Get search volume from items
+                for item in items:
+                    keyword = item.get('keyword', '')
+                    if brand.lower() in keyword.lower():
+                        search_volume = item.get('search_volume', 0)
+                        break
+                
+                # If no exact match, use first item
+                if search_volume == 0 and items:
+                    search_volume = items[0].get('search_volume', 0)
+                
+                # DataforSEO doesn't provide monthly breakdown by default
+                # We'll use the average for all months
+                monthly_volumes = {}
+                end_date = datetime.now().replace(day=1) - relativedelta(months=2)
+                
+                for i in range(months_back):
+                    month_date = end_date - relativedelta(months=i)
+                    month_key = f"{month_date.year}-{month_date.month:02d}"
+                    monthly_volumes[month_key] = search_volume
+                
+                return {
+                    'brand': brand,
+                    'avg_volume': search_volume,
+                    'monthly_volumes': monthly_volumes,
+                    'keywords': [brand]
+                }
+        
+        # No results
+        return {
+            'brand': brand,
+            'avg_volume': 0,
+            'monthly_volumes': {},
+            'keywords': []
+        }
         
     except Exception as e:
         st.error(f"Amazon API Error for {brand}: {str(e)}")
